@@ -1,4 +1,4 @@
-import os, socket, struct, random
+import os, socket, struct, random, time
 
 def list_files(dir_path):
     # list to store files
@@ -25,7 +25,9 @@ def send_file(sck: socket.socket, filename):
         while read_bytes := f.read(1024):
             sck.sendall(read_bytes)
 
-upload_folder = os.path.abspath(os.curdir) + "/upload"
+# Must avoid conflicts between clients
+client_id = int(time.time() * 1000)  
+upload_folder = f"./upload_{client_id}"
 os.makedirs(upload_folder, exist_ok=True)  # Create folder if it doesn't exist
 
 # Delete all files in upload folder
