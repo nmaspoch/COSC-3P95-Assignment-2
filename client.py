@@ -38,8 +38,11 @@ meter = metrics.get_meter("client.meter")
 
 files_generated_counter = meter.create_counter("files.generated", "Number of files generated")
 
-tracer_provider = TracerProvider(sampler=ALWAYS_ON)
-# tracer_provider = TracerProvider(sampler=TraceIdRatioBased(0.25))
+sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
+if sampling_rate >= 1.0:
+    tracer_provider = TracerProvider(sampler=ALWAYS_ON)
+else:
+    tracer_provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate))
 
 def list_files(dir_path):
     # list to store files

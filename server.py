@@ -37,9 +37,11 @@ meter = metrics.get_meter("server.meter")
 files_received_counter = meter.create_counter("files.received", "Number of files received")
 file_size_histogram = meter.create_histogram(name="files.size", unit="bytes", description="Distribution of file sizes")
 
-tracer_provider = TracerProvider(sampler=ALWAYS_ON)
-# tracer_provider = TracerProvider(sampler=TraceIdRatioBased(0.25))
-
+sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
+if sampling_rate >= 1.0:
+    tracer_provider = TracerProvider(sampler=ALWAYS_ON)
+else:
+    tracer_provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate))
 
 def receive_file_size(sck: socket.socket):
     # This funcion makes sure that the bytes which indicate the size of the file that will be sent are received.
