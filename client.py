@@ -18,10 +18,17 @@ from opentelemetry.sdk.metrics.export import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON, TraceIdRatioBased
 
+from cryptography.fernet import Fernet
+
 total_bytes = 0
 
-resource = Resource.create({"service.name": "file-transfer-server"}) 
-provider = TracerProvider(resource=resource)
+resource = Resource.create({"service.name": "file-transfer-client"}) 
+sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
+if sampling_rate >= 1.0:
+    provider = TracerProvider(sampler=ALWAYS_ON, resource=resource)
+else:
+    provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate), resource=resource)
+    
 processor = BatchSpanProcessor(ConsoleSpanExporter())
 provider.add_span_processor(processor)
 # Sets the global default tracer provider
@@ -37,12 +44,12 @@ metrics.set_meter_provider(provider)
 meter = metrics.get_meter("client.meter")
 
 files_generated_counter = meter.create_counter("files.generated", "Number of files generated")
+compressed_size_histogram = meter.create_histogram(name="files.compressed_size", unit="bytes", description="Distribution of compressed file sizes")
+encrypted_size_histogram = meter.create_histogram(name="files.encrypted_size", unit="bytes", description="Distribution of encrypted file sizes")
+original_size_histogram = meter.create_histogram(name="files.original_size", unit="bytes", description="Distribution of original file sizes")
 
-sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
-if sampling_rate >= 1.0:
-    tracer_provider = TracerProvider(sampler=ALWAYS_ON)
-else:
-    tracer_provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate))
+key = b'nyY7ownDE1chVYqULAOrHQ7BYOlDc_FL-7XMEI4yihI='
+cipher = Fernet(key)
 
 def list_files(dir_path):
     # list to store files
@@ -72,7 +79,9 @@ def send_file(sck: socket.socket, filename, index):
         sent_file.add_event("Compressed file")
 
         original_size = len(original_file)
+        original_size_histogram.record(original_size)
         compressed_size = len(compressed_file)
+        compressed_size_histogram.record(compressed_size)
 
         sent_file.set_attribute("original_size", original_size)
         sent_file.set_attribute("compressed_size", compressed_size)
@@ -80,12 +89,20 @@ def send_file(sck: socket.socket, filename, index):
         compress_ratio = (original_size - compressed_size) / original_size
         sent_file.set_attribute("compression_ratio", compress_ratio)
 
+        sent_file.add_event("Encrypting file")
+        encrypted_file = cipher.encrypt(compressed_file)
+        sent_file.add_event("File encrypted")
+
+        encrypted_size = len(encrypted_file)
+        encrypted_size_histogram.record(encrypted_size)
+        sent_file.set_attribute("encrypted_size", encrypted_size)
+
         # First inform the server the amount of bytes that will be sent.
-        sck.sendall(struct.pack("<Q", compressed_size))
+        sck.sendall(struct.pack("<Q", encrypted_size))
         # Send the file in 1024-bytes chunks.
         offset = 0
-        while offset < compressed_size:
-            chunk = compressed_file[offset:offset + 1024]
+        while offset < encrypted_size:
+            chunk = encrypted_file[offset:offset + 1024]
             sck.sendall(chunk)
             offset += len(chunk)
         sent_file.add_event(f"File {index} uploaded")

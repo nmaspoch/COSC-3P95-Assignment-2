@@ -18,8 +18,15 @@ from opentelemetry.sdk.metrics.export import (
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON, TraceIdRatioBased
 
-resource = Resource.create({"service.name": "file-transfer-client"}) 
-provider = TracerProvider(resource=resource)
+from cryptography.fernet import Fernet
+
+resource = Resource.create({"service.name": "file-transfer-server"}) 
+sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
+if sampling_rate >= 1.0:
+    provider = TracerProvider(sampler=ALWAYS_ON, resource=resource)
+else:
+    provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate), resource=resource)
+
 processor = BatchSpanProcessor(ConsoleSpanExporter())
 provider.add_span_processor(processor)
 # Sets the global default tracer provider
@@ -36,13 +43,11 @@ meter = metrics.get_meter("server.meter")
 
 files_received_counter = meter.create_counter("files.received", "Number of files received")
 compressed_size_histogram = meter.create_histogram(name="files.compressed_size", unit="bytes", description="Distribution of compressed file sizes")
-decompressed_size_histogram = meter.create_histogram(name="files.decompressed_size", unit="bytes", description="Distribution of decompressed file sizes")
+encrypted_size_histogram = meter.create_histogram(name="files.encrypted_size", unit="bytes", description="Distribution of encrypted file sizes")
+decompressed_size_histogram = meter.create_histogram(name="files.decompressed_size", unit="bytes", description="Distribution of decompressed and decrypted file sizes")
 
-sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
-if sampling_rate >= 1.0:
-    tracer_provider = TracerProvider(sampler=ALWAYS_ON)
-else:
-    tracer_provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate))
+key = b'nyY7ownDE1chVYqULAOrHQ7BYOlDc_FL-7XMEI4yihI='
+cipher = Fernet(key)
 
 def receive_file_size(sck: socket.socket):
     # This funcion makes sure that the bytes which indicate the size of the file that will be sent are received.
@@ -65,27 +70,35 @@ def receive_file(sck: socket.socket, filename, index):
         file_span.set_attribute("name", filename)
         file_span.set_attribute("index", index)
 
-        compressed_size = receive_file_size(sck)
-        file_span.set_attribute("compressed_size", compressed_size)
-        compressed_size_histogram.record(compressed_size)
+        encrypted_size = receive_file_size(sck)
+        file_span.set_attribute("encrypted_size", encrypted_size)
+        encrypted_size_histogram.record(encrypted_size)
 
-        compressed_data = bytes()
+        encrypted_data = bytes()
         received_bytes = 0
         
         num_chunks = 0
-        while received_bytes < compressed_size:
-            bytes_to_receive = min(1024, compressed_size - received_bytes)
+        while received_bytes < encrypted_size:
+            bytes_to_receive = min(1024, encrypted_size - received_bytes)
             chunk = sck.recv(bytes_to_receive)
             if not chunk:
-                raise ConnectionError(f"Connection closed. Received {received_bytes}/{compressed_size} bytes")
+                raise ConnectionError(f"Connection closed. Received {received_bytes}/{encrypted_size} bytes")
             
-            compressed_data += chunk
+            encrypted_data += chunk
             received_bytes += len(chunk)
             num_chunks += 1
+
         file_span.set_attribute("num_chunks", num_chunks)
-        file_span.add_event(f'Received {received_bytes} bytes out of {compressed_size} total bytes for file {index}')
+        file_span.add_event(f'Received {received_bytes} bytes out of {encrypted_size} total bytes for file {index}')
 
         files_received_counter.add(1)
+
+        file_span.add_event("Decrypting file")
+        compressed_data = cipher.decrypt(encrypted_data)
+        file_span.add_event("Decrypted file")
+
+        compressed_size = len(compressed_data)
+        compressed_size_histogram.record(compressed_size)
 
         file_span.add_event("Decompressing file")
         decompressed_data = zlib.decompress(compressed_data)
@@ -95,6 +108,7 @@ def receive_file(sck: socket.socket, filename, index):
             f.write(decompressed_data)
 
         original_size = len(decompressed_data)
+        decompressed_size_histogram.record(original_size)
 
         file_span.set_attribute("original_size", original_size)
         file_span.set_attribute("compressed_size", compressed_size)
