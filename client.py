@@ -137,6 +137,7 @@ num_files = random.randint(20, 50)
 
 # Generate files
 with tracer.start_as_current_span("file_generation_span") as file_generation_span:
+    total_bytes = 0
     for i in range(num_files):
         file_generation_span.add_event(f"Generating file #{i}")
         size_in_bytes = random.randint(5120, 104857600) # 5KB to 100MB
