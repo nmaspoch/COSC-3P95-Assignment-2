@@ -2,20 +2,38 @@ receivers:
   otlp:
     protocols:
       grpc:
-        endpoint: 0.0.0.0:4317
+        endpoint: "0.0.0.0:4317"
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: "0.0.0.0:4318"
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 100
+
 exporters:
   debug:
     verbosity: detailed
+
+  otlp/elastic:
+    endpoint: "http://apm-server:8200"
+    tls:
+      insecure: true
+    # APM Server 8.x needs these headers for OTLP
+    headers:
+      Authorization: "Bearer ${APM_SECRET_TOKEN}" # or use anonymous
+
 service:
   pipelines:
     traces:
       receivers: [otlp]
-      exporters: [debug]
+      processors: [batch]
+      exporters: [debug, otlp/elastic]
     metrics:
       receivers: [otlp]
-      exporters: [debug]
+      processors: [batch]
+      exporters: [debug, otlp/elastic]
     logs:
       receivers: [otlp]
-      exporters: [debug]
+      processors: [batch]
+      exporters: [debug, otlp/elastic]
