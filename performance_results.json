@@ -1,0 +1,102 @@
+[
+  {
+    "config": "25% Sampling",
+    "run": 1,
+    "time": 4.588237285614014
+  },
+  {
+    "config": "25% Sampling",
+    "run": 2,
+    "time": 6.766729116439819
+  },
+  {
+    "config": "25% Sampling",
+    "run": 3,
+    "time": 6.103703022003174
+  },
+  {
+    "config": "25% Sampling",
+    "run": 4,
+    "time": 4.1536009311676025
+  },
+  {
+    "config": "25% Sampling",
+    "run": 5,
+    "time": 3.1788811683654785
+  },
+  {
+    "config": "25% Sampling",
+    "run": 6,
+    "time": 5.027507305145264
+  },
+  {
+    "config": "25% Sampling",
+    "run": 7,
+    "time": 4.554088830947876
+  },
+  {
+    "config": "25% Sampling",
+    "run": 8,
+    "time": 5.415567874908447
+  },
+  {
+    "config": "25% Sampling",
+    "run": 9,
+    "time": 2.8739829063415527
+  },
+  {
+    "config": "25% Sampling",
+    "run": 10,
+    "time": 6.078063011169434
+  },
+  {
+    "config": "25% Sampling",
+    "run": 11,
+    "time": 7.118042945861816
+  },
+  {
+    "config": "25% Sampling",
+    "run": 12,
+    "time": 5.655668020248413
+  },
+  {
+    "config": "25% Sampling",
+    "run": 13,
+    "time": 5.339734077453613
+  },
+  {
+    "config": "25% Sampling",
+    "run": 14,
+    "time": 7.006822109222412
+  },
+  {
+    "config": "25% Sampling",
+    "run": 15,
+    "time": 5.3402018547058105
+  },
+  {
+    "config": "25% Sampling",
+    "run": 16,
+    "time": 4.738330841064453
+  },
+  {
+    "config": "25% Sampling",
+    "run": 17,
+    "time": 7.9247400760650635
+  },
+  {
+    "config": "25% Sampling",
+    "run": 18,
+    "time": 7.0530712604522705
+  },
+  {
+    "config": "25% Sampling",
+    "run": 19,
+    "time": 7.389277935028076
+  },
+  {
+    "config": "25% Sampling",
+    "run": 20,
+    "time": 4.25904393196106
+  }
+]

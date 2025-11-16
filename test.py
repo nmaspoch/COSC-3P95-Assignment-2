@@ -31,7 +31,7 @@ def stop_server(server_process):
 configs = [
     {"name": "No Tracing", "tracing": "false", "sampling": "1.0", "runs": 5},
     {"name": "Full Tracing", "tracing": "true", "sampling": "1.0", "runs": 5},
-    {"name": "30% Sampling", "tracing": "true", "sampling": "0.3", "runs": 5},
+    {"name": "25% Sampling", "tracing": "true", "sampling": "0.25", "runs": 20},
 ]
 
 results = []
