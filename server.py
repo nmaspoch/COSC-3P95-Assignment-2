@@ -84,6 +84,13 @@ def receive_file(sck: socket.socket, filename, index):
         file_span.set_attribute("name", filename)
         file_span.set_attribute("index", index)
 
+        # Receive compression flag
+        flag_byte = sck.recv(1)
+        if not flag_byte:
+            raise ConnectionError("Connection closed while receiving compression flag")
+        is_compressed = struct.unpack("B", flag_byte)[0] == 1
+        file_span.set_attribute("is_compressed", is_compressed)
+
         encrypted_size = receive_file_size(sck)
         file_span.set_attribute("encrypted_size", encrypted_size)
         encrypted_size_histogram.record(encrypted_size)
@@ -108,27 +115,34 @@ def receive_file(sck: socket.socket, filename, index):
         files_received_counter.add(1)
 
         file_span.add_event("Decrypting file")
-        compressed_data = cipher.decrypt(encrypted_data)
+        decrypted_data = cipher.decrypt(encrypted_data)
         file_span.add_event("Decrypted file")
 
-        compressed_size = len(compressed_data)
-        compressed_size_histogram.record(compressed_size)
-
-        file_span.add_event("Decompressing file")
-        decompressed_data = zlib.decompress(compressed_data)
-        file_span.add_event("Decompressed file")
+        # Only decompress if it was compressed
+        if is_compressed:
+            compressed_size = len(decrypted_data)
+            compressed_size_histogram.record(compressed_size)
+            
+            file_span.add_event("Decompressing file")
+            final_data = zlib.decompress(decrypted_data)
+            file_span.add_event("Decompressed file")
+        else:
+            compressed_size = len(decrypted_data)
+            final_data = decrypted_data
+            file_span.add_event("No decompression needed")
         
         with open(filename, "wb") as f:
-            f.write(decompressed_data)
+            f.write(final_data)
 
-        original_size = len(decompressed_data)
+        original_size = len(final_data)
         decompressed_size_histogram.record(original_size)
 
         file_span.set_attribute("original_size", original_size)
         file_span.set_attribute("compressed_size", compressed_size)
 
-        compress_ratio = (original_size - compressed_size) / original_size
-        file_span.set_attribute("compression_ratio", compress_ratio)
+        if original_size > 0:
+            compress_ratio = (original_size - compressed_size) / original_size
+            file_span.set_attribute("compression_ratio", compress_ratio)
 
 def handle_client(conn, address):
     with tracer.start_as_current_span("client_span") as client_span:

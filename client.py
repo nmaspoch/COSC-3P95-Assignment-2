@@ -85,32 +85,53 @@ def send_file(sck: socket.socket, filename, index):
 
         with open(filename, "rb") as f:
             original_file = f.read()
-        sent_file.add_event("Compressing file")
-        compressed_file = zlib.compress(original_file, zlib.Z_BEST_COMPRESSION)
-        sent_file.add_event("Compressed file")
-
+        
         original_size = len(original_file)
         original_size_histogram.record(original_size)
-        compressed_size = len(compressed_file)
-        compressed_size_histogram.record(compressed_size)
+        
+        # Decide whether to compress
+        is_compressed = False
+        if original_size > 0:
+            sent_file.add_event("Compressing file")
+            compressed_file = zlib.compress(original_file, zlib.Z_BEST_COMPRESSION)
+            sent_file.add_event("Compressed file")
+            
+            compressed_size = len(compressed_file)
+            
+            # Only use compression if it actually reduces size
+            if compressed_size < original_size:
+                is_compressed = True
+                data_to_encrypt = compressed_file
+                compressed_size_histogram.record(compressed_size)
+            else:
+                data_to_encrypt = original_file
+                compressed_size = original_size
+                sent_file.set_attribute("compression_skipped", True)
+        else:
+            data_to_encrypt = original_file
+            compressed_size = original_size
 
         sent_file.set_attribute("original_size", original_size)
         sent_file.set_attribute("compressed_size", compressed_size)
-
-        compress_ratio = (original_size - compressed_size) / original_size
-        sent_file.set_attribute("compression_ratio", compress_ratio)
+        sent_file.set_attribute("is_compressed", is_compressed)
+        
+        if original_size > 0:
+            compress_ratio = (original_size - compressed_size) / original_size
+            sent_file.set_attribute("compression_ratio", compress_ratio)
 
         sent_file.add_event("Encrypting file")
-        encrypted_file = cipher.encrypt(compressed_file)
+        encrypted_file = cipher.encrypt(data_to_encrypt)
         sent_file.add_event("File encrypted")
 
         encrypted_size = len(encrypted_file)
         encrypted_size_histogram.record(encrypted_size)
         sent_file.set_attribute("encrypted_size", encrypted_size)
 
-        # First inform the server the amount of bytes that will be sent.
+        # Send compression flag (1 byte: 1=compressed, 0=not compressed)
+        sck.sendall(struct.pack("B", 1 if is_compressed else 0))
+        # Send the size
         sck.sendall(struct.pack("<Q", encrypted_size))
-        # Send the file in 1024-bytes chunks.
+        # Send the file in 1024-bytes chunks
         offset = 0
         while offset < encrypted_size:
             chunk = encrypted_file[offset:offset + 1024]
@@ -144,7 +165,12 @@ with tracer.start_as_current_span("file_generation_span") as file_generation_spa
         total_bytes += size_in_bytes
         filepath = os.path.join(upload_folder, f'file_{i}.bin') 
         with open(filepath, "wb") as f:
-            f.write(b'\0' * size_in_bytes)
+            if size_in_bytes < 50000:  # Small files: random data
+                f.write(os.urandom(size_in_bytes))
+            else:  # Larger files: compressible patterns
+                pattern = b'Lorem ipsum dolor sit amet, consectetur adipiscing elit. ' * 100
+                data = (pattern * (size_in_bytes // len(pattern) + 1))[:size_in_bytes]
+                f.write(data)
         files_generated_counter.add(1)
     file_generation_span.set_attribute("num_files_generated", num_files)
     file_generation_span.set_attribute("total_size_generated", total_bytes)
@@ -152,6 +178,7 @@ with tracer.start_as_current_span("file_generation_span") as file_generation_spa
 
 files = sorted(list_files(upload_folder))
 
+start_time = time.time()
 with tracer.start_as_current_span("client_span") as client_span:
     client_span.set_attribute("client_id", client_id)
     client_span.set_attribute("total_files", num_files)
@@ -166,6 +193,10 @@ with tracer.start_as_current_span("client_span") as client_span:
             client_span.add_event("Sent")
 
     client_span.add_event("Connection closed.")
+    end_time = time.time()
+
+    total_latency = end_time - start_time
+    client_span.set_attribute("total_latency_seconds", total_latency)
 
 if tracing_enabled:
     tracerProvider.shutdown()  
