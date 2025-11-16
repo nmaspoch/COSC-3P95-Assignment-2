@@ -67,82 +67,135 @@ def receive_file_size(sck: socket.socket):
     # This funcion makes sure that the bytes which indicate the size of the file that will be sent are received.
     # The file is packed by the client via struct.pack(), 
     # a function that generates a bytes sequence that represents the file size.
-    fmt = "<Q"
-    expected_bytes = struct.calcsize(fmt)
-    received_bytes = 0
-    stream = bytes()
-    while received_bytes < expected_bytes:
-        chunk = sck.recv(expected_bytes - received_bytes)
-        stream += chunk
-        received_bytes += len(chunk)
-    file_size = struct.unpack(fmt, stream)[0]
-    return file_size
+    sck.settimeout(120)  # 2 minute timeout
+    try:
+        fmt = "<Q"
+        expected_bytes = struct.calcsize(fmt)
+        received_bytes = 0
+        stream = bytes()
+        while received_bytes < expected_bytes:
+            chunk = sck.recv(expected_bytes - received_bytes)
+            if not chunk:
+                raise ConnectionError("Connection closed")
+            stream += chunk
+            received_bytes += len(chunk)
+        file_size = struct.unpack(fmt, stream)[0]
+        return file_size
+    except socket.timeout:
+        print("ERROR: Timeout receiving file size")
+        raise
 
 
 def receive_file(sck: socket.socket, filename, index):
     with tracer.start_as_current_span("file_span") as file_span:
         file_span.set_attribute("name", filename)
         file_span.set_attribute("index", index)
+        
+        # Initialize error predicates
+        file_span.set_attribute("had_timeout", False)
+        file_span.set_attribute("had_decompression_error", False)
+        file_span.set_attribute("had_decryption_error", False)
 
         # Receive compression flag
-        flag_byte = sck.recv(1)
-        if not flag_byte:
-            raise ConnectionError("Connection closed while receiving compression flag")
-        is_compressed = struct.unpack("B", flag_byte)[0] == 1
-        file_span.set_attribute("is_compressed", is_compressed)
+        try:
+            flag_byte = sck.recv(1)
+            if not flag_byte:
+                raise ConnectionError("Connection closed while receiving compression flag")
+            is_compressed = struct.unpack("B", flag_byte)[0] == 1
+            file_span.set_attribute("is_compressed", is_compressed)
+            print(f"File {index}: is_compressed={is_compressed}")
 
-        encrypted_size = receive_file_size(sck)
-        file_span.set_attribute("encrypted_size", encrypted_size)
-        encrypted_size_histogram.record(encrypted_size)
+            encrypted_size = receive_file_size(sck)
+            file_span.set_attribute("encrypted_size", encrypted_size)
+            encrypted_size_histogram.record(encrypted_size)
+            print(f"File {index}: encrypted_size={encrypted_size}")
 
-        encrypted_data = bytes()
-        received_bytes = 0
-        
-        num_chunks = 0
-        while received_bytes < encrypted_size:
-            bytes_to_receive = min(1024, encrypted_size - received_bytes)
-            chunk = sck.recv(bytes_to_receive)
-            if not chunk:
-                raise ConnectionError(f"Connection closed. Received {received_bytes}/{encrypted_size} bytes")
+            encrypted_data = bytes()
+            chunk_size = 65536
+            received_bytes = 0
             
-            encrypted_data += chunk
-            received_bytes += len(chunk)
-            num_chunks += 1
+            num_chunks = 0
+            while received_bytes < encrypted_size:
+                bytes_to_receive = min(chunk_size, encrypted_size - received_bytes)
+                chunk = sck.recv(bytes_to_receive)
+                if not chunk:
+                    raise ConnectionError(f"Connection closed. Received {received_bytes}/{encrypted_size} bytes")
+                
+                encrypted_data += chunk
+                received_bytes += len(chunk)
+                num_chunks += 1
 
-        file_span.set_attribute("num_chunks", num_chunks)
-        file_span.add_event(f'Received {received_bytes} bytes out of {encrypted_size} total bytes for file {index}')
+            file_span.set_attribute("num_chunks", num_chunks)
+            file_span.add_event(f'Received {received_bytes} bytes out of {encrypted_size} total bytes for file {index}')
+            print(f"File {index}: received {received_bytes} bytes in {num_chunks} chunks")
 
-        files_received_counter.add(1)
+            files_received_counter.add(1)
 
-        file_span.add_event("Decrypting file")
-        decrypted_data = cipher.decrypt(encrypted_data)
-        file_span.add_event("Decrypted file")
+            # Decrypt file
+            file_span.add_event("Decrypting file")
+            try:
+                decrypted_data = cipher.decrypt(encrypted_data)
+                file_span.add_event("Decrypted file")
+                print(f"File {index}: decrypted successfully, size={len(decrypted_data)}")
+            except Exception as e:
+                print(f"ERROR: Decryption failed for file {index}: {e}")
+                file_span.add_event(f"Decryption failed: {e}")
+                file_span.set_attribute("had_decryption_error", True)  # SET TO TRUE
+                raise
 
-        # Only decompress if it was compressed
-        if is_compressed:
-            compressed_size = len(decrypted_data)
-            compressed_size_histogram.record(compressed_size)
+            # Only decompress if it was compressed
+            if is_compressed:
+                compressed_size = len(decrypted_data)
+                compressed_size_histogram.record(compressed_size)
+                
+                file_span.add_event("Decompressing file")
+                try:
+                    final_data = zlib.decompress(decrypted_data)
+                    file_span.add_event("Decompressed file")
+                    print(f"File {index}: decompressed successfully, original_size={len(final_data)}")
+                except zlib.error as e:
+                    print(f"ERROR: Decompression failed for file {index}: {e}")
+                    file_span.add_event(f"Decompression failed: {e}")
+                    file_span.set_attribute("had_decompression_error", True)  # SET TO TRUE
+                    # Use decrypted data as-is if decompression fails
+                    final_data = decrypted_data
+                    compressed_size = len(final_data)
+            else:
+                compressed_size = len(decrypted_data)
+                final_data = decrypted_data
+                file_span.add_event("No decompression needed")
+                print(f"File {index}: no decompression needed, size={len(final_data)}")
             
-            file_span.add_event("Decompressing file")
-            final_data = zlib.decompress(decrypted_data)
-            file_span.add_event("Decompressed file")
-        else:
-            compressed_size = len(decrypted_data)
-            final_data = decrypted_data
-            file_span.add_event("No decompression needed")
-        
-        with open(filename, "wb") as f:
-            f.write(final_data)
+            # Write file
+            try:
+                with open(filename, "wb") as f:
+                    f.write(final_data)
+                print(f"File {index}: written to {filename}")
+            except Exception as e:
+                print(f"ERROR: Failed to write file {index}: {e}")
+                raise
 
-        original_size = len(final_data)
-        decompressed_size_histogram.record(original_size)
+            original_size = len(final_data)
+            decompressed_size_histogram.record(original_size)
 
-        file_span.set_attribute("original_size", original_size)
-        file_span.set_attribute("compressed_size", compressed_size)
+            file_span.set_attribute("original_size", original_size)
+            file_span.set_attribute("compressed_size", compressed_size)
+            file_span.set_attribute("compression_skipped", compressed_size >= original_size)
+            file_span.set_attribute("is_compressible", original_size > 50000) 
 
-        if original_size > 0:
-            compress_ratio = (original_size - compressed_size) / original_size
-            file_span.set_attribute("compression_ratio", compress_ratio)
+            if original_size > 0:
+                compress_ratio = (original_size - compressed_size) / original_size
+                file_span.set_attribute("compression_ratio", compress_ratio)
+
+            print(f"File {index}: completed successfully\n")
+            
+        except socket.timeout as e:
+            print(f"ERROR: Timeout receiving file {index}: {e}")
+            file_span.set_attribute("had_timeout", True)  # SET TO TRUE FOR TIMEOUT
+            raise
+        except Exception as e:
+            print(f"ERROR receiving file {index}: {e}")
+            raise
 
 def handle_client(conn, address):
     with tracer.start_as_current_span("client_span") as client_span:
