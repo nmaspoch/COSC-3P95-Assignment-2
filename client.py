@@ -164,7 +164,7 @@ def send_file(sck: socket.socket, filename, index):
         sck.sendall(struct.pack("B", 1 if is_compressed else 0))
         # Send the size
         sck.sendall(struct.pack("<Q", encrypted_size))
-        # Send the file in 1024-bytes chunks
+        # Send the file in 64KB chunks
         offset = 0
         chunk_size = 65536
         while offset < encrypted_size:
